@@ -8,13 +8,11 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   Future<void> _openUnsort(BuildContext context) async {
-    // Unsort: user picks the parent folder containing sorted subfolders
-    // showImagePreview false — they're picking a folder that has subfolders, not images
-    final sourceDir = await Navigator.of(context).push<String>(
+    final result = await Navigator.of(context).push<(String, List<String>)>(
       MaterialPageRoute(
           builder: (_) => const FolderPicker(showImagePreview: false)),
     );
-    if (sourceDir == null || !context.mounted) return;
+    if (result == null || !context.mounted) return;
 
     final names = await Navigator.of(context).push<List<String>>(
       MaterialPageRoute(builder: (_) => const _NameOnlySetup()),
@@ -22,7 +20,7 @@ class HomeScreen extends StatelessWidget {
     if (names == null || !context.mounted) return;
 
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => UnsortScreen(sourceDir: sourceDir, names: names),
+      builder: (_) => UnsortScreen(sourceDir: result.$1, names: names),
     ));
   }
 
@@ -42,13 +40,8 @@ class HomeScreen extends StatelessWidget {
               const Text('Your personal photo organizer.',
                   style: FotoText.caption),
               const SizedBox(height: FotoSpacing.xxl),
-
-              const Text('WHAT DO YOU WANT TO DO?',
-                  style: TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.w600,
-                      color: FotoColors.textHint, letterSpacing: 0.8)),
+              const Text('WHAT DO YOU WANT TO DO?', style: kSectionLabel),
               const SizedBox(height: FotoSpacing.sm),
-
               _ModeCard(
                 icon: Icons.swipe_rounded,
                 title: 'Sort Photos',
@@ -60,12 +53,10 @@ class HomeScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (_) => const SetupScreen())),
               ),
               const SizedBox(height: FotoSpacing.sm),
-
               _ModeCard(
                 icon: Icons.undo_rounded,
                 title: 'Unsort / Move Back',
-                description:
-                    'Move already-sorted photos to a different folder.',
+                description: 'Move already-sorted photos to a different folder.',
                 bgColor: FotoColors.leftBg,
                 iconColor: FotoColors.left,
                 onTap: () => _openUnsort(context),
@@ -135,11 +126,12 @@ class _NameOnlySetupState extends State<_NameOnlySetup> {
                   color: FotoColors.surfaceAlt,
                   borderRadius: FotoRadius.card,
                 ),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start,
+                child: const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  const Icon(Icons.info_outline_rounded,
+                  Icon(Icons.info_outline_rounded,
                       color: FotoColors.textSecondary, size: 16),
-                  const SizedBox(width: FotoSpacing.sm),
+                  SizedBox(width: FotoSpacing.sm),
                   Expanded(
                     child: Text(
                       'Enter the same folder names you used when sorting.',
@@ -205,9 +197,7 @@ class _NameOnlySetupState extends State<_NameOnlySetup> {
                         borderRadius: FotoRadius.card),
                     elevation: 0,
                   ),
-                  child: Text('Continue',
-                      style:
-                          FotoText.body.copyWith(fontWeight: FontWeight.w600)),
+                  child: const Text('Continue', style: FotoText.bodyBold),
                 ),
               ),
               const SizedBox(height: FotoSpacing.md),
@@ -265,8 +255,7 @@ class _ModeCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(children: [
-                  Text(title,
-                      style: FotoText.body.copyWith(fontWeight: FontWeight.w700)),
+                  Text(title, style: FotoText.bodyBold),
                   if (badge != null) ...[
                     const SizedBox(width: FotoSpacing.sm),
                     Container(
@@ -286,7 +275,7 @@ class _ModeCard extends StatelessWidget {
                 ]),
                 const SizedBox(height: FotoSpacing.xs),
                 Text(description,
-                    style: FotoText.caption.copyWith(height: 1.4)),
+                    style: FotoText.caption),
               ],
             ),
           ),

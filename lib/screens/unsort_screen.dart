@@ -3,11 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:path/path.dart' as p;
 import '../theme.dart';
+import '../shared.dart';
 import '../services/file_service.dart';
-
-const _kWhite85 = Color(0xD9FFFFFF);
-const _kWhite50 = Color(0x80FFFFFF);
-const _kWhite15 = Color(0x26FFFFFF);
 
 class UnsortScreen extends StatefulWidget {
   final String sourceDir;
@@ -46,10 +43,14 @@ class _UnsortScreenState extends State<UnsortScreen>
   late final AnimationController _snapCtrl;
   Offset _flyTarget = Offset.zero;
 
+  Size _screenSize = const Size(400, 800);
+
   final Map<int, Widget> _cache = {};
   static const _preload   = 4;
   static const _cacheMax  = 8;
   static const _threshold = 70.0;
+
+  static const _arrows = ['↑', '↓', '←', '→'];
 
   @override
   void initState() {
@@ -62,6 +63,12 @@ class _UnsortScreenState extends State<UnsortScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _screenSize = MediaQuery.sizeOf(context);
+  }
+
+  @override
   void dispose() {
     _drag.dispose();
     _hintIdx.dispose();
@@ -70,12 +77,23 @@ class _UnsortScreenState extends State<UnsortScreen>
     super.dispose();
   }
 
+  // ── Reset to folder picker ─────────────────────────────────────────────────
+
+  void _resetToPicker() {
+    _cache.clear();
+    setState(() {
+      _fromFolder = null;
+      _images     = [];
+      _index      = 0;
+      _locked     = false;
+    });
+  }
+
   // ── Folder selection ───────────────────────────────────────────────────────
 
   Future<void> _selectFolder(String name) async {
     setState(() => _loading = true);
-    final images = await FileService.scanFolder(
-        p.join(widget.sourceDir, name));
+    final images = await FileService.scanFolder(p.join(widget.sourceDir, name));
     _cache.clear();
     setState(() {
       _fromFolder = name;
@@ -91,7 +109,7 @@ class _UnsortScreenState extends State<UnsortScreen>
         content: Text('No photos in "$name".'),
         backgroundColor: FotoColors.warning,
         behavior: SnackBarBehavior.floating,
-        shape: const RoundedRectangleBorder(borderRadius: FotoRadius.button),
+        shape: RoundedRectangleBorder(borderRadius: FotoRadius.button),
       ));
     }
   }
@@ -150,10 +168,10 @@ class _UnsortScreenState extends State<UnsortScreen>
   void _onPanEnd(DragEndDetails d) {
     if (!_dragging || _locked) return;
     _dragging = false;
-    final velocity = d.velocity.pixelsPerSecond.distance;
-    final hint     = _hintIdx.value;
-    if (hint != null && (_drag.value.distance >= _threshold || velocity > 800)) {
-      _commitWithAnimation(hint, d.velocity.pixelsPerSecond);
+    final speed = d.velocity.pixelsPerSecond.distance;
+    final hint  = _hintIdx.value;
+    if (hint != null && (_drag.value.distance >= _threshold || speed > 800)) {
+      _commitWithAnimation(hint);
     } else {
       _snapBack(d.velocity.pixelsPerSecond);
     }
@@ -169,29 +187,27 @@ class _UnsortScreenState extends State<UnsortScreen>
     final spring = SpringDescription.withDampingRatio(
       mass: 1.0, stiffness: 300.0, ratio: 0.7,
     );
-
-    final simX = SpringSimulation(spring, start.dx, 0, velocity.dx * 0.1);
-    final simY = SpringSimulation(spring, start.dy, 0, velocity.dy * 0.1);
-
-    // FIX: drive _drag directly — no addListener stacking
     _snapCtrl.stop();
     _snapCtrl.value = 0;
-    _snapCtrl.animateWith(_DirectSpring(simX, simY, start, _drag));
+    _snapCtrl.animateWith(DirectSpring(
+      SpringSimulation(spring, start.dx, 0, velocity.dx * 0.1),
+      SpringSimulation(spring, start.dy, 0, velocity.dy * 0.1),
+      _drag,
+    ));
   }
 
   // ── Fly-off ────────────────────────────────────────────────────────────────
 
-  void _commitWithAnimation(int destIdx, Offset velocity) {
+  void _commitWithAnimation(int destIdx) {
     if (_locked) return;
     _locked = true;
     _hintIdx.value = null;
 
-    final size = MediaQuery.sizeOf(context);
     _flyTarget = switch (destIdx) {
-      0 => Offset(0, -size.height * 1.5),
-      1 => Offset(0,  size.height * 1.5),
-      2 => Offset(-size.width * 1.5, 0),
-      _ => Offset( size.width * 1.5, 0),
+      0 => Offset(0, -_screenSize.height * 1.5),
+      1 => Offset(0,  _screenSize.height * 1.5),
+      2 => Offset(-_screenSize.width * 1.5, 0),
+      _ => Offset( _screenSize.width * 1.5, 0),
     };
 
     _flyCtrl.value = 0;
@@ -252,27 +268,27 @@ class _UnsortScreenState extends State<UnsortScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Neutral info banner — consistent with setup_screen
             Container(
               padding: const EdgeInsets.all(FotoSpacing.md),
-              decoration: const BoxDecoration(
-                color: FotoColors.leftBg,
+              decoration: BoxDecoration(
+                color: FotoColors.surfaceAlt,
                 borderRadius: FotoRadius.card,
               ),
-              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Icon(Icons.info_outline_rounded,
-                    color: FotoColors.left, size: 16),
-                const SizedBox(width: FotoSpacing.sm),
+              child: const Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Icon(Icons.info_outline_rounded,
+                    color: FotoColors.textSecondary, size: 16),
+                SizedBox(width: FotoSpacing.sm),
                 Expanded(
                   child: Text('Pick a sorted folder to swipe photos out of.',
-                      style: FotoText.caption.copyWith(color: FotoColors.left)),
+                      style: FotoText.caption),
                 ),
               ]),
             ),
             const SizedBox(height: FotoSpacing.lg),
-            const Text('SELECT A FOLDER',
-                style: TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w600,
-                    color: FotoColors.textHint, letterSpacing: 0.8)),
+            const Text('SELECT A FOLDER', style: kSectionLabel),
             const SizedBox(height: FotoSpacing.sm),
             ...List.generate(widget.names.length, (i) => Padding(
               padding: const EdgeInsets.only(bottom: FotoSpacing.sm),
@@ -281,9 +297,8 @@ class _UnsortScreenState extends State<UnsortScreen>
                 child: Container(
                   padding: const EdgeInsets.all(FotoSpacing.md),
                   decoration: BoxDecoration(
-                    color: FotoColors.surface,
+                    color: FotoColors.surfaceAlt,
                     borderRadius: FotoRadius.card,
-                    boxShadow: kCardShadow,
                     border: Border(
                         left: BorderSide(color: FotoColors.dirs[i], width: 3)),
                   ),
@@ -295,7 +310,7 @@ class _UnsortScreenState extends State<UnsortScreen>
                         borderRadius: FotoRadius.chip,
                       ),
                       child: Center(
-                        child: Text(['↑','↓','←','→'][i],
+                        child: Text(_arrows[i],
                             style: TextStyle(
                                 color: FotoColors.dirs[i],
                                 fontSize: 16,
@@ -304,9 +319,7 @@ class _UnsortScreenState extends State<UnsortScreen>
                     ),
                     const SizedBox(width: FotoSpacing.md),
                     Expanded(
-                      child: Text(widget.names[i],
-                          style: FotoText.body
-                              .copyWith(fontWeight: FontWeight.w600)),
+                      child: Text(widget.names[i], style: FotoText.bodyBold),
                     ),
                     const Icon(Icons.chevron_right_rounded,
                         color: FotoColors.textHint, size: 18),
@@ -338,17 +351,11 @@ class _UnsortScreenState extends State<UnsortScreen>
                   style: FotoText.display),
               const SizedBox(height: FotoSpacing.xl),
               GestureDetector(
-                onTap: () => setState(() {
-                  _fromFolder = null;
-                  _images     = [];
-                  _index      = 0;
-                  _cache.clear();
-                  _locked     = false;
-                }),
+                onTap: _resetToPicker,
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: FotoSpacing.lg, vertical: FotoSpacing.md),
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     color: FotoColors.surfaceAlt,
                     borderRadius: FotoRadius.button,
                   ),
@@ -385,7 +392,7 @@ class _UnsortScreenState extends State<UnsortScreen>
           },
         ),
 
-      // Current card
+      // Current card — single Matrix4 transform
       GestureDetector(
         onPanStart:  _onPanStart,
         onPanUpdate: _onPanUpdate,
@@ -396,12 +403,11 @@ class _UnsortScreenState extends State<UnsortScreen>
             final offset = _flyCtrl.value > 0 && _flyTarget != Offset.zero
                 ? Offset.lerp(_drag.value, _flyTarget, _flyCtrl.value)!
                 : _drag.value;
-            return Transform.translate(
-              offset: offset,
-              child: Transform.rotate(
-                angle: offset.dx / 900,
-                child: SizedBox.expand(child: current),
-              ),
+            return Transform(
+              transform: Matrix4.identity()
+                ..translate(offset.dx, offset.dy)
+                ..rotateZ(offset.dx / 900),
+              child: SizedBox.expand(child: current),
             );
           },
         ),
@@ -424,13 +430,7 @@ class _UnsortScreenState extends State<UnsortScreen>
                 FotoSpacing.md, FotoSpacing.sm, FotoSpacing.md, 0),
             child: Row(children: [
               GestureDetector(
-                onTap: () => setState(() {
-                  _fromFolder = null;
-                  _images     = [];
-                  _index      = 0;
-                  _cache.clear();
-                  _locked     = false;
-                }),
+                onTap: _resetToPicker,
                 child: Container(
                   padding: const EdgeInsets.all(FotoSpacing.sm),
                   decoration: const BoxDecoration(
@@ -438,7 +438,7 @@ class _UnsortScreenState extends State<UnsortScreen>
                     borderRadius: FotoRadius.button,
                   ),
                   child: const Icon(Icons.close_outlined,
-                      color: _kWhite85, size: 18),
+                      color: kWhite85, size: 18),
                 ),
               ),
               const SizedBox(width: FotoSpacing.md),
@@ -450,12 +450,12 @@ class _UnsortScreenState extends State<UnsortScreen>
                     LinearProgressIndicator(
                       value: _movedCount / _images.length,
                       minHeight: 2,
-                      backgroundColor: _kWhite15,
-                      valueColor: const AlwaysStoppedAnimation(_kWhite85),
+                      backgroundColor: kWhite15,
+                      valueColor: const AlwaysStoppedAnimation(kWhite85),
                     ),
                     const SizedBox(height: FotoSpacing.xs),
                     Text('$_fromFolder  ·  $remaining remaining',
-                        style: FotoText.micro.copyWith(color: _kWhite50)),
+                        style: kMicroWhite50),
                   ],
                 ),
               ),
@@ -473,39 +473,12 @@ class _UnsortScreenState extends State<UnsortScreen>
             child: _BottomBar(
               destNames: _destNames,
               hintIdx:   _hintIdx,
-              onTap:     (i) => _commitWithAnimation(i, Offset.zero),
+              onTap:     _commitWithAnimation,
             ),
           ),
         ),
       ),
     ]);
-  }
-}
-
-// ── Direct spring — writes to drag notifier, no listener stacking ─────────────
-
-class _DirectSpring extends Simulation {
-  final SpringSimulation _x;
-  final SpringSimulation _y;
-  final Offset _start;
-  final ValueNotifier<Offset> _drag;
-
-  _DirectSpring(this._x, this._y, this._start, this._drag);
-
-  @override
-  double x(double time) {
-    _drag.value = Offset(_x.x(time), _y.x(time));
-    return _drag.value.distance;
-  }
-
-  @override
-  double dx(double time) => _x.dx(time);
-
-  @override
-  bool isDone(double time) {
-    final done = _x.isDone(time) && _y.isDone(time);
-    if (done) _drag.value = Offset.zero;
-    return done;
   }
 }
 
@@ -607,9 +580,9 @@ class _BottomBar extends StatelessWidget {
       Container(
         padding: const EdgeInsets.symmetric(
             horizontal: FotoSpacing.md, vertical: FotoSpacing.sm),
-        decoration: const BoxDecoration(
-          color: Color(0xE8F7F5FB),
-          borderRadius: BorderRadius.vertical(
+        decoration: BoxDecoration(
+          color: const Color(0xE8F7F5FB),
+          borderRadius: const BorderRadius.vertical(
               top: Radius.circular(FotoRadius.xl)),
           boxShadow: kElevatedShadow,
         ),
@@ -653,13 +626,14 @@ class _BottomBar extends StatelessWidget {
             borderRadius: BorderRadius.vertical(
                 bottom: Radius.circular(FotoRadius.xl)),
           ),
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const Icon(Icons.undo_outlined,
-                color: FotoColors.textSecondary, size: 16),
-            const SizedBox(width: FotoSpacing.sm),
+          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.undo_outlined, color: FotoColors.textSecondary, size: 16),
+            SizedBox(width: FotoSpacing.sm),
             Text('Return to original folder',
-                style: FotoText.caption
-                    .copyWith(fontWeight: FontWeight.w500)),
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: FotoColors.textSecondary)),
           ]),
         ),
       ),

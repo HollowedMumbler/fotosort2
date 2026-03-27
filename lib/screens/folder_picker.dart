@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import '../services/file_service.dart';
 import '../theme.dart';
 
+/// Returns a (String path, List<String> images) record.
+/// images is populated only when showImagePreview is true.
+/// Usage:
+///   final result = await Navigator.push<(String, List<String>)>(...)
 class FolderPicker extends StatefulWidget {
   final bool showImagePreview;
 
@@ -48,9 +52,7 @@ class _FolderPickerState extends State<FolderPicker> {
     setState(() {
       _currentPath = path;
       _dirs        = results[0] as List<Map<String, String>>;
-      _images      = widget.showImagePreview
-          ? results[1] as List<String>
-          : [];
+      _images      = widget.showImagePreview ? results[1] as List<String> : [];
       _history.add(path);
       _loading     = false;
     });
@@ -68,11 +70,15 @@ class _FolderPickerState extends State<FolderPicker> {
     setState(() {
       _currentPath = prev;
       _dirs        = results[0] as List<Map<String, String>>;
-      _images      = widget.showImagePreview
-          ? results[1] as List<String>
-          : [];
+      _images      = widget.showImagePreview ? results[1] as List<String> : [];
       _loading     = false;
     });
+  }
+
+  void _select() {
+    if (_currentPath == null) return;
+    // Return path + already-scanned images — caller reuses, no double scan
+    Navigator.of(context).pop((_currentPath!, List<String>.from(_images)));
   }
 
   @override
@@ -86,19 +92,14 @@ class _FolderPickerState extends State<FolderPicker> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_outlined),
           onPressed: () {
-            if (_history.length > 1) {
-              _back();
-            } else {
-              Navigator.of(context).pop();
-            }
+            if (_history.length > 1) _back();
+            else Navigator.of(context).pop();
           },
         ),
         actions: [
           if (!_loading)
             TextButton(
-              onPressed: _currentPath != null
-                  ? () => Navigator.of(context).pop(_currentPath)
-                  : null,
+              onPressed: _select,
               child: const Text('Use this',
                   style: TextStyle(
                       color: FotoColors.textPrimary,
@@ -111,41 +112,35 @@ class _FolderPickerState extends State<FolderPicker> {
               strokeWidth: 2, color: FotoColors.textSecondary))
           : Column(children: [
 
-              // Image preview grid — 2 rows × 4 cols
+              // Image preview grid — 2×4, soft
               if (widget.showImagePreview && _images.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
-                      FotoSpacing.md, FotoSpacing.md,
-                      FotoSpacing.md, 0),
+                      FotoSpacing.md, FotoSpacing.md, FotoSpacing.md, 0),
                   child: LayoutBuilder(
                     builder: (_, constraints) {
-                      const cols     = 4;
-                      const gap      = FotoSpacing.xs;
-                      final cellSize =
-                          (constraints.maxWidth - gap * (cols - 1)) / cols;
+                      const cols = 4;
+                      const gap  = FotoSpacing.xs;
+                      final cell = (constraints.maxWidth - gap * (cols - 1)) / cols;
                       final shown = _images.length.clamp(0, 8);
                       final extra = _images.length - 8;
-
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Wrap(
-                            spacing: gap,
-                            runSpacing: gap,
+                            spacing: gap, runSpacing: gap,
                             children: List.generate(shown, (i) => ClipRRect(
                               borderRadius: FotoRadius.chip,
                               child: Opacity(
                                 opacity: 0.85,
                                 child: Image.file(
                                   File(_images[i]),
-                                  width: cellSize,
-                                  height: cellSize,
+                                  width: cell, height: cell,
                                   fit: BoxFit.cover,
-                                  cacheWidth: (cellSize * 2).toInt(),
+                                  cacheWidth: (cell * 2).toInt(),
                                   errorBuilder: (_, __, ___) => Container(
-                                    width: cellSize,
-                                    height: cellSize,
-                                    decoration: BoxDecoration(
+                                    width: cell, height: cell,
+                                    decoration: const BoxDecoration(
                                       color: FotoColors.surfaceAlt,
                                       borderRadius: FotoRadius.chip,
                                     ),
@@ -156,10 +151,8 @@ class _FolderPickerState extends State<FolderPicker> {
                           ),
                           if (extra > 0) ...[
                             const SizedBox(height: FotoSpacing.xs),
-                            Text(
-                              '+$extra more photo${extra != 1 ? 's' : ''}',
-                              style: FotoText.micro,
-                            ),
+                            Text('+$extra more photo${extra != 1 ? 's' : ''}',
+                                style: FotoText.micro),
                           ],
                         ],
                       );
@@ -173,10 +166,8 @@ class _FolderPickerState extends State<FolderPicker> {
               // Folder list
               Expanded(
                 child: _dirs.isEmpty
-                    ? Center(
-                        child: Text('No subfolders here.',
-                            style: FotoText.caption),
-                      )
+                    ? Center(child: Text('No subfolders here.',
+                        style: FotoText.caption))
                     : ListView.separated(
                         itemCount: _dirs.length,
                         separatorBuilder: (_, __) =>
@@ -184,8 +175,7 @@ class _FolderPickerState extends State<FolderPicker> {
                         itemBuilder: (_, i) => ListTile(
                           leading: const Icon(Icons.folder_rounded,
                               color: FotoColors.textSecondary, size: 20),
-                          title: Text(_dirs[i]['name'] ?? '',
-                              style: FotoText.body),
+                          title: Text(_dirs[i]['name'] ?? '', style: FotoText.body),
                           trailing: const Icon(Icons.chevron_right_rounded,
                               color: FotoColors.textHint, size: 18),
                           onTap: () => _enter(_dirs[i]['path']!),
