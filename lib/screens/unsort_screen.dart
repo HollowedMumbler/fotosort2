@@ -1,121 +1,66 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart';
 import 'package:path/path.dart' as p;
+import '../file_service.dart';
 import '../theme.dart';
-import '../shared.dart';
-import '../services/file_service.dart';
+
+const _kWhite85 = Color(0xD9FFFFFF);
+const _kWhite60 = Color(0x99FFFFFF);
+const _kBlack35 = Color(0x59000000);
 
 class UnsortScreen extends StatefulWidget {
-  final String sourceDir;
-  final List<String> names; // [up, down, left, right]
+  final List<String> folderNames;
+  final String sourceDirectory;
 
   const UnsortScreen({
     super.key,
-    required this.sourceDir,
-    required this.names,
+    required this.folderNames,
+    required this.sourceDirectory,
   });
 
   @override
   State<UnsortScreen> createState() => _UnsortScreenState();
 }
 
-class _UnsortScreenState extends State<UnsortScreen>
-    with TickerProviderStateMixin {
+class _UnsortScreenState extends State<UnsortScreen> {
 
   String? _fromFolder;
-  List<String> _images = [];
-  int  _index      = 0;
-  int  _movedCount = 0;
-  bool _locked     = false;
-  bool _loading    = false;
+  List<String> _paths = [];
+  int _index      = 0;
+  int _movedCount = 0;
 
   late final List<String> _destNames;
-  late final List<String> _destLabels;
 
-  final _drag    = ValueNotifier<Offset>(Offset.zero);
-  final _hintIdx = ValueNotifier<int?>(null);
+  final _dragDelta = ValueNotifier<Offset>(Offset.zero);
+  final _hintIndex = ValueNotifier<int?>(null);
 
   Offset _dragStart = Offset.zero;
-  bool   _dragging  = false;
+  bool _dragging    = false;
 
-  late final AnimationController _flyCtrl;
-  late final AnimationController _snapCtrl;
-  Offset _flyTarget = Offset.zero;
+  // FIX: hard lock — set before setState, released inside setState
+  bool _locked = false;
 
-  final Map<int, Widget> _cache = {};
-  static const _preload   = 4;
-  static const _cacheMax  = 8;
-  static const _threshold = 70.0;
+  final Map<int, Widget> _imageCache = {};
 
-  static const _arrows = ['↑', '↓', '←', '→'];
+  static const double _threshold   = 70.0;
+  static const int _preloadAhead   = 4;
+  static const int _maxCacheSize   = 8;
 
   @override
   void initState() {
     super.initState();
-    _destNames  = [...widget.names, 'Original'];
-    _destLabels = [...widget.names.map((n) => n.toUpperCase()), 'ORIGINAL'];
-    _flyCtrl  = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 250));
-    _snapCtrl = AnimationController.unbounded(vsync: this);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _screenSize = MediaQuery.sizeOf(context);
+    _destNames = [...widget.folderNames, 'Original'];
   }
 
   @override
   void dispose() {
-    _drag.dispose();
-    _hintIdx.dispose();
-    _flyCtrl.dispose();
-    _snapCtrl.dispose();
+    _dragDelta.dispose();
+    _hintIndex.dispose();
     super.dispose();
   }
 
-  // ── Reset to folder picker ─────────────────────────────────────────────────
-
-  void _resetToPicker() {
-    _cache.clear();
-    setState(() {
-      _fromFolder = null;
-      _images     = [];
-      _index      = 0;
-      _locked     = false;
-    });
-  }
-
-  // ── Folder selection ───────────────────────────────────────────────────────
-
-  Future<void> _selectFolder(String name) async {
-    setState(() => _loading = true);
-    final images = await FileService.scanFolder(p.join(widget.sourceDir, name));
-    _cache.clear();
-    setState(() {
-      _fromFolder = name;
-      _images     = images;
-      _index      = 0;
-      _movedCount = 0;
-      _locked     = false;
-      _loading    = false;
-    });
-    _preloadFrom(0);
-    if (images.isEmpty && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('No photos in "$name".'),
-        backgroundColor: FotoColors.warning,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: FotoRadius.button),
-      ));
-    }
-  }
-
-  // ── Cache ──────────────────────────────────────────────────────────────────
-
-  Widget _buildImg(int i) => Image.file(
-        File(_images[i]),
+  Widget _buildImageWidget(String path) => Image.file(
+        File(path),
         fit: BoxFit.contain,
         gaplessPlayback: true,
         errorBuilder: (_, __, ___) => const Center(
@@ -124,26 +69,49 @@ class _UnsortScreenState extends State<UnsortScreen>
         ),
       );
 
-  void _preloadFrom(int from) {
-    for (int i = from; i < from + _preload && i < _images.length; i++) {
-      _cache.putIfAbsent(i, () => _buildImg(i));
+  void _preloadRange(int from, int count) {
+    for (int i = from; i < from + count && i < _paths.length; i++) {
+      if (_imageCache.containsKey(i)) continue;
+      _imageCache[i] = _buildImageWidget(_paths[i]);
     }
-    if (_cache.length > _cacheMax) {
-      final keys = _cache.keys.toList()..sort();
+    // FIX: cap cache size to avoid memory bloat
+    if (_imageCache.length > _maxCacheSize) {
+      final keys = _imageCache.keys.toList()..sort();
       for (final k in keys) {
         if (k < _index - 1) {
-          _cache.remove(k);
-          if (_cache.length <= _cacheMax) break;
+          _imageCache.remove(k);
+          if (_imageCache.length <= _maxCacheSize) break;
         }
       }
     }
   }
 
-  // ── Gesture ────────────────────────────────────────────────────────────────
+  Future<void> _selectFromFolder(String folderName) async {
+    final folderPath = p.join(widget.sourceDirectory, folderName);
+    final images = await FileService.scanFolder(folderPath);
+    _imageCache.clear();
+    setState(() {
+      _fromFolder = folderName;
+      _paths      = images;
+      _index      = 0;
+      _movedCount = 0;
+      _locked     = false;
+    });
+    // FIX: preload from index 0 immediately
+    _preloadRange(0, _preloadAhead);
+    if (images.isEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('No photos in "$folderName".',
+            style: FotoText.body.copyWith(color: Colors.white)),
+        backgroundColor: FotoColors.warning,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: FotoRadius.button),
+      ));
+    }
+  }
 
   void _onPanStart(DragStartDetails d) {
     if (_locked) return;
-    _snapCtrl.stop();
     _dragStart = d.globalPosition;
     _dragging  = true;
   }
@@ -152,112 +120,69 @@ class _UnsortScreenState extends State<UnsortScreen>
     if (!_dragging || _locked) return;
     final delta = d.globalPosition - _dragStart;
     int? hint;
-    if (delta.distance > 15) {
+    if (delta.distance > 20) {
       if (delta.dx.abs() > delta.dy.abs()) {
         hint = delta.dx > 0 ? 3 : 2;
       } else {
         hint = delta.dy > 0 ? 1 : 0;
       }
     }
-    _drag.value    = delta;
-    _hintIdx.value = hint;
+    _dragDelta.value = delta;
+    _hintIndex.value = hint;
   }
 
   void _onPanEnd(DragEndDetails d) {
     if (!_dragging || _locked) return;
     _dragging = false;
-    final speed = d.velocity.pixelsPerSecond.distance;
-    final hint  = _hintIdx.value;
-    if (hint != null && (_drag.value.distance >= _threshold || speed > 800)) {
-      _commitWithAnimation(hint);
+    final delta    = _dragDelta.value;
+    final hint     = _hintIndex.value;
+    final velocity = d.velocity.pixelsPerSecond.distance;
+    if (hint != null && (delta.distance >= _threshold || velocity > 800)) {
+      _commitMove(hint);
     } else {
-      _snapBack(d.velocity.pixelsPerSecond);
+      _dragDelta.value = Offset.zero;
+      _hintIndex.value = null;
     }
   }
 
-  // ── Spring snap-back ───────────────────────────────────────────────────────
-
-  void _snapBack(Offset velocity) {
-    _hintIdx.value = null;
-    final start = _drag.value;
-    if (start == Offset.zero) return;
-
-    final spring = SpringDescription.withDampingRatio(
-      mass: 1.0, stiffness: 300.0, ratio: 0.7,
-    );
-    _snapCtrl.stop();
-    _snapCtrl.value = 0;
-    _snapCtrl.animateWith(DirectSpring(
-      SpringSimulation(spring, start.dx, 0, velocity.dx * 0.1),
-      SpringSimulation(spring, start.dy, 0, velocity.dy * 0.1),
-      _drag,
-    ));
-  }
-
-  // ── Fly-off ────────────────────────────────────────────────────────────────
-
-  void _commitWithAnimation(int destIdx) {
-    if (_locked) return;
+  void _commitMove(int destIndex) {
+    // FIX: lock FIRST before anything else
+    if (_locked || _index >= _paths.length) return;
     _locked = true;
-    _hintIdx.value = null;
 
-    _flyTarget = switch (destIdx) {
-      0 => Offset(0, -_screenSize.height * 1.5),
-      1 => Offset(0,  _screenSize.height * 1.5),
-      2 => Offset(-_screenSize.width * 1.5, 0),
-      _ => Offset( _screenSize.width * 1.5, 0),
-    };
+    final imagePath = _paths[_index];
+    final destDir = destIndex < 4
+        ? p.join(widget.sourceDirectory, widget.folderNames[destIndex])
+        : widget.sourceDirectory;
 
-    _flyCtrl.value = 0;
-    _flyCtrl.animateTo(1, curve: Curves.easeIn).then((_) {
-      if (!mounted) return;
-      _finishCommit(destIdx);
-    });
-  }
+    FileService.moveFile(imagePath, destDir);
 
-  void _finishCommit(int destIdx) {
-    final destDir = destIdx < 4
-        ? p.join(widget.sourceDir, widget.names[destIdx])
-        : widget.sourceDir;
+    // FIX: reset notifiers immediately
+    _dragDelta.value = Offset.zero;
+    _hintIndex.value = null;
 
-    FileService.moveFile(_images[_index], destDir);
+    // FIX: preload next before advancing
+    final nextIndex = _index + 1;
+    _preloadRange(nextIndex, _preloadAhead);
 
-    _cache.remove(_index);
-    _drag.value    = Offset.zero;
-    _flyCtrl.value = 0;
-    _flyTarget     = Offset.zero;
-
-    final next     = _index + 1;
-    final newCount = _movedCount + 1;
-
-    _preloadFrom(next);
+    _imageCache.remove(_index);
 
     setState(() {
-      _index      = next;
-      _movedCount = newCount;
-      _locked     = false;
+      _index      = nextIndex;
+      _movedCount = _movedCount + 1;
+      // FIX: unlock inside setState — atomic with index update
+      _locked = false;
     });
   }
-
-  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _fromFolder == null ? FotoColors.background : Colors.black,
-      appBar: _fromFolder == null
-          ? AppBar(title: const Text('Unsort'))
-          : null,
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(
-              strokeWidth: 2, color: FotoColors.textSecondary))
-          : _fromFolder == null
-              ? _folderPicker()
-              : _sorter(),
+      backgroundColor: FotoColors.background,
+      appBar: AppBar(title: const Text('Unsort')),
+      body: _fromFolder == null ? _folderPicker() : _sorter(),
     );
   }
-
-  // ── Folder picker ──────────────────────────────────────────────────────────
 
   Widget _folderPicker() {
     return SafeArea(
@@ -269,56 +194,55 @@ class _UnsortScreenState extends State<UnsortScreen>
             Container(
               padding: const EdgeInsets.all(FotoSpacing.md),
               decoration: BoxDecoration(
-                color: FotoColors.surfaceAlt,
+                color: FotoColors.infoBannerBg,
                 borderRadius: FotoRadius.card,
               ),
-              child: const Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Icon(Icons.info_outline_rounded,
-                    color: FotoColors.textSecondary, size: 16),
-                SizedBox(width: FotoSpacing.sm),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.info_outline_rounded,
+                    color: FotoColors.infoBannerText, size: 16),
+                const SizedBox(width: FotoSpacing.sm),
                 Expanded(
-                  child: Text('Pick a sorted folder to swipe photos out of.',
-                      style: FotoText.caption),
+                  child: Text(
+                    'Pick a sorted folder to swipe photos out of.',
+                    style: FotoText.caption.copyWith(color: FotoColors.infoBannerText),
+                  ),
                 ),
               ]),
             ),
             const SizedBox(height: FotoSpacing.lg),
-            const Text('SELECT A FOLDER', style: kSectionLabel),
-            const SizedBox(height: FotoSpacing.sm),
-            ...List.generate(widget.names.length, (i) => Padding(
+            Text('SELECT A FOLDER',
+                style: FotoText.label.copyWith(letterSpacing: 0.8)),
+            const SizedBox(height: FotoSpacing.md),
+            ...List.generate(widget.folderNames.length, (i) => Padding(
               padding: const EdgeInsets.only(bottom: FotoSpacing.sm),
               child: GestureDetector(
-                onTap: () => _selectFolder(widget.names[i]),
+                onTap: () => _selectFromFolder(widget.folderNames[i]),
                 child: Container(
                   padding: const EdgeInsets.all(FotoSpacing.md),
                   decoration: BoxDecoration(
-                    color: FotoColors.surfaceAlt,
+                    color: FotoColors.surface,
                     borderRadius: FotoRadius.card,
-                    border: Border(
-                        left: BorderSide(color: FotoColors.dirs[i], width: 3)),
+                    boxShadow: FotoShadow.card,
+                    border: Border(left: BorderSide(
+                        color: FotoColors.directions[i], width: 3)),
                   ),
                   child: Row(children: [
                     Container(
                       width: 36, height: 36,
                       decoration: BoxDecoration(
-                        color: FotoColors.dirBgs[i],
-                        borderRadius: FotoRadius.chip,
+                        color: FotoColors.directionBgs[i],
+                        borderRadius: BorderRadius.circular(FotoRadius.sm),
                       ),
-                      child: Center(
-                        child: Text(_arrows[i],
-                            style: TextStyle(
-                                color: FotoColors.dirs[i],
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600)),
-                      ),
+                      child: Center(child: Text(
+                        ['↑','↓','←','→'][i],
+                        style: TextStyle(color: FotoColors.directions[i],
+                            fontSize: 16, fontWeight: FontWeight.w500),
+                      )),
                     ),
                     const SizedBox(width: FotoSpacing.md),
-                    Expanded(
-                      child: Text(widget.names[i], style: FotoText.bodyBold),
-                    ),
-                    const Icon(Icons.chevron_right_rounded,
+                    Expanded(child: Text(widget.folderNames[i],
+                        style: FotoText.body.copyWith(fontWeight: FontWeight.w500))),
+                    const Icon(Icons.chevron_right_outlined,
                         color: FotoColors.textHint, size: 18),
                   ]),
                 ),
@@ -330,92 +254,66 @@ class _UnsortScreenState extends State<UnsortScreen>
     );
   }
 
-  // ── Sorter ─────────────────────────────────────────────────────────────────
-
   Widget _sorter() {
-    final remaining = _images.length - _index;
+    final remaining = _paths.length - _index;
 
     if (remaining <= 0) {
-      return SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(FotoSpacing.xl),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.check_circle_outline_rounded,
-                  color: FotoColors.up, size: 48),
-              const SizedBox(height: FotoSpacing.md),
-              Text('$_movedCount photo${_movedCount != 1 ? 's' : ''} moved',
-                  style: FotoText.display),
-              const SizedBox(height: FotoSpacing.xl),
-              GestureDetector(
-                onTap: _resetToPicker,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: FotoSpacing.lg, vertical: FotoSpacing.md),
-                  decoration: BoxDecoration(
-                    color: FotoColors.surfaceAlt,
-                    borderRadius: FotoRadius.button,
-                  ),
-                  child: const Text('Pick another folder', style: FotoText.body),
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(FotoSpacing.xl),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.check_circle_outline_rounded,
+                color: FotoColors.up, size: 48),
+            const SizedBox(height: FotoSpacing.md),
+            Text('$_movedCount photo${_movedCount != 1 ? 's' : ''} moved',
+                style: FotoText.display),
+            const SizedBox(height: FotoSpacing.xl),
+            GestureDetector(
+              onTap: () {
+                _imageCache.clear();
+                setState(() {
+                  _fromFolder = null;
+                  _paths      = [];
+                  _index      = 0;
+                  _locked     = false;
+                });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: FotoSpacing.lg, vertical: FotoSpacing.md),
+                decoration: BoxDecoration(
+                  color: FotoColors.surfaceAlt,
+                  borderRadius: FotoRadius.button,
                 ),
+                child: Text('Pick another folder', style: FotoText.body),
               ),
-            ]),
-          ),
+            ),
+          ]),
         ),
       );
     }
 
-    final current = _cache[_index] ?? _buildImg(_index);
-    final nextImg = _index + 1 < _images.length
-        ? (_cache[_index + 1] ?? _buildImg(_index + 1))
-        : null;
+    // FIX: fallback to building on the spot — no blank flash on cache miss
+    final current = _imageCache[_index] ?? _buildImageWidget(_paths[_index]);
 
     return Stack(children: [
-
-      // Next card
-      if (nextImg != null)
-        ListenableBuilder(
-          listenable: Listenable.merge([_drag, _flyCtrl]),
-          builder: (_, __) {
-            final progress =
-                ((_drag.value.distance / 200) + _flyCtrl.value).clamp(0.0, 1.0);
-            return Transform.scale(
-              scale: 0.95 + 0.05 * progress,
-              child: Opacity(
-                opacity: 0.5 + 0.5 * progress,
-                child: SizedBox.expand(child: nextImg),
-              ),
-            );
-          },
-        ),
-
-      // Current card — single Matrix4 transform
+      // Photo
       GestureDetector(
         onPanStart:  _onPanStart,
         onPanUpdate: _onPanUpdate,
         onPanEnd:    _onPanEnd,
-        child: ListenableBuilder(
-          listenable: Listenable.merge([_drag, _flyCtrl]),
-          builder: (_, __) {
-            final offset = _flyCtrl.value > 0 && _flyTarget != Offset.zero
-                ? Offset.lerp(_drag.value, _flyTarget, _flyCtrl.value)!
-                : _drag.value;
-            return Transform(
-              transform: Matrix4.identity()
-                ..translate(offset.dx, offset.dy)
-                ..rotateZ(offset.dx / 900),
-              child: SizedBox.expand(child: current),
-            );
-          },
+        child: _UnsortDragLayer(
+          dragDelta: _dragDelta,
+          child: current,
         ),
       ),
 
       // Hint badge
-      _HintBadge(
-        drag:      _drag,
-        hintIdx:   _hintIdx,
-        labels:    _destLabels,
-        threshold: _threshold,
+      _UnsortHintOverlay(
+        dragDelta:  _dragDelta,
+        hintIndex:  _hintIndex,
+        threshold:  _threshold,
+        destNames:  _destNames,
       ),
 
       // Top bar
@@ -427,50 +325,43 @@ class _UnsortScreenState extends State<UnsortScreen>
                 FotoSpacing.md, FotoSpacing.sm, FotoSpacing.md, 0),
             child: Row(children: [
               GestureDetector(
-                onTap: _resetToPicker,
+                onTap: () {
+                  _imageCache.clear();
+                  setState(() {
+                    _fromFolder = null;
+                    _paths      = [];
+                    _index      = 0;
+                    _locked     = false;
+                  });
+                },
                 child: Container(
                   padding: const EdgeInsets.all(FotoSpacing.sm),
-                  decoration: const BoxDecoration(
-                    color: Color(0x66000000),
-                    borderRadius: FotoRadius.button,
-                  ),
-                  child: const Icon(Icons.close_outlined,
-                      color: kWhite85, size: 18),
+                  decoration: BoxDecoration(
+                    color: _kBlack35, borderRadius: FotoRadius.button),
+                  child: const Icon(Icons.close_outlined, color: _kWhite85, size: 18),
                 ),
               ),
               const SizedBox(width: FotoSpacing.md),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    LinearProgressIndicator(
-                      value: _movedCount / _images.length,
-                      minHeight: 2,
-                      backgroundColor: kWhite15,
-                      valueColor: const AlwaysStoppedAnimation(kWhite85),
-                    ),
-                    const SizedBox(height: FotoSpacing.xs),
-                    Text('$_fromFolder  ·  $remaining remaining',
-                        style: kMicroWhite50),
-                  ],
-                ),
+                child: Text('$_fromFolder  •  $remaining remaining',
+                    style: const TextStyle(color: _kWhite60, fontSize: 11)),
               ),
             ]),
           ),
         ),
       ),
 
-      // Bottom bar
+      // Bottom controls
       Positioned(
         bottom: 0, left: 0, right: 0,
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.all(FotoSpacing.md),
-            child: _BottomBar(
-              destNames: _destNames,
-              hintIdx:   _hintIdx,
-              onTap:     _commitWithAnimation,
+            padding: const EdgeInsets.fromLTRB(
+                FotoSpacing.md, 0, FotoSpacing.md, FotoSpacing.md),
+            child: _UnsortBottomControls(
+              folderNames: widget.folderNames,
+              hintIndex:   _hintIndex,
+              onTap:       _commitMove,
             ),
           ),
         ),
@@ -479,67 +370,69 @@ class _UnsortScreenState extends State<UnsortScreen>
   }
 }
 
-// ── Hint badge ─────────────────────────────────────────────────────────────────
+// ── Drag layer ────────────────────────────────────────────────────────────────
+class _UnsortDragLayer extends StatelessWidget {
+  final ValueNotifier<Offset> dragDelta;
+  final Widget child;
 
-class _HintBadge extends StatelessWidget {
-  final ValueNotifier<Offset> drag;
-  final ValueNotifier<int?> hintIdx;
-  final List<String> labels;
-  final double threshold;
-
-  const _HintBadge({
-    required this.drag,
-    required this.hintIdx,
-    required this.labels,
-    required this.threshold,
-  });
-
-  static const _alignments = [
-    Alignment.topCenter,
-    Alignment.bottomCenter,
-    Alignment.centerLeft,
-    Alignment.centerRight,
-    Alignment.center,
-  ];
-  static const _paddings = [
-    EdgeInsets.only(top: 100),
-    EdgeInsets.only(bottom: 100),
-    EdgeInsets.only(left: 24),
-    EdgeInsets.only(right: 24),
-    EdgeInsets.zero,
-  ];
+  const _UnsortDragLayer({required this.dragDelta, required this.child});
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<Offset>(
+      valueListenable: dragDelta,
+      builder: (_, offset, __) => Transform.translate(
+        offset: offset,
+        child: Transform.rotate(
+          angle: offset.dx / 900,
+          child: SizedBox.expand(
+            child: ColoredBox(color: Colors.black, child: child),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Hint overlay ──────────────────────────────────────────────────────────────
+class _UnsortHintOverlay extends StatelessWidget {
+  final ValueNotifier<Offset> dragDelta;
+  final ValueNotifier<int?> hintIndex;
+  final double threshold;
+  final List<String> destNames;
+
+  const _UnsortHintOverlay({
+    required this.dragDelta, required this.hintIndex,
+    required this.threshold, required this.destNames,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // FIX: single ListenableBuilder on both notifiers — no nested teardown
     return ListenableBuilder(
-      listenable: Listenable.merge([hintIdx, drag]),
+      listenable: Listenable.merge([hintIndex, dragDelta]),
       builder: (_, __) {
-        final idx = hintIdx.value;
+        final idx = hintIndex.value;
         if (idx == null) return const SizedBox.shrink();
-        final opacity =
-            ((drag.value.distance - 15) / (threshold - 15)).clamp(0.0, 1.0);
-        final color = idx < 4 ? FotoColors.dirs[idx] : FotoColors.textSecondary;
-        final i     = idx.clamp(0, 4);
+        final delta   = dragDelta.value;
+        final color   = idx < 4 ? FotoColors.directions[idx] : FotoColors.textSecondary;
+        final opacity = (delta.distance / threshold).clamp(0.0, 1.0);
         return Positioned.fill(
           child: IgnorePointer(
             child: Opacity(
               opacity: opacity,
-              child: Align(
-                alignment: _alignments[i],
-                child: Padding(
-                  padding: _paddings[i],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: FotoSpacing.md, vertical: FotoSpacing.sm),
-                    decoration: BoxDecoration(
-                      color: color,
-                      borderRadius: FotoRadius.button,
-                    ),
-                    child: Text(labels[idx.clamp(0, labels.length - 1)],
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600)),
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: FotoSpacing.md, vertical: FotoSpacing.sm),
+                  decoration: BoxDecoration(
+                    color: color, borderRadius: FotoRadius.button,
+                    boxShadow: FotoShadow.elevated,
+                  ),
+                  child: Text(
+                    destNames[idx].toUpperCase(),
+                    style: const TextStyle(color: Colors.white,
+                        fontSize: 14, fontWeight: FontWeight.w500),
                   ),
                 ),
               ),
@@ -551,24 +444,19 @@ class _HintBadge extends StatelessWidget {
   }
 }
 
-// ── Bottom bar ─────────────────────────────────────────────────────────────────
-
-class _BottomBar extends StatelessWidget {
-  final List<String> destNames;
-  final ValueNotifier<int?> hintIdx;
+// ── Bottom controls ───────────────────────────────────────────────────────────
+class _UnsortBottomControls extends StatelessWidget {
+  final List<String> folderNames;
+  final ValueNotifier<int?> hintIndex;
   final void Function(int) onTap;
 
-  const _BottomBar({
-    required this.destNames,
-    required this.hintIdx,
-    required this.onTap,
+  const _UnsortBottomControls({
+    required this.folderNames, required this.hintIndex, required this.onTap,
   });
 
   static const _icons = [
-    Icons.arrow_upward_outlined,
-    Icons.arrow_downward_outlined,
-    Icons.arrow_back_outlined,
-    Icons.arrow_forward_outlined,
+    Icons.arrow_upward_outlined, Icons.arrow_downward_outlined,
+    Icons.arrow_back_outlined,   Icons.arrow_forward_outlined,
   ];
 
   @override
@@ -578,38 +466,38 @@ class _BottomBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(
             horizontal: FotoSpacing.md, vertical: FotoSpacing.sm),
         decoration: BoxDecoration(
-          color: const Color(0xE8F7F5FB),
+          color: const Color(0xE1F7F5FB),
           borderRadius: const BorderRadius.vertical(
               top: Radius.circular(FotoRadius.xl)),
-          boxShadow: kElevatedShadow,
+          boxShadow: FotoShadow.elevated,
         ),
         child: ValueListenableBuilder<int?>(
-          valueListenable: hintIdx,
+          valueListenable: hintIndex,
           builder: (_, active, __) => Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: List.generate(4, (i) {
-              final isActive = active == i;
-              final color    = FotoColors.dirs[i];
-              return GestureDetector(
-                onTap: () => onTap(i),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: FotoSpacing.sm, vertical: FotoSpacing.xs),
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(_icons[i],
-                        color: isActive ? color : FotoColors.textSecondary,
-                        size: 20),
-                    const SizedBox(height: FotoSpacing.xs),
-                    Text(destNames[i],
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: isActive ? color : FotoColors.textHint),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1),
-                  ]),
-                ),
-              );
-            }),
+            children: List.generate(4, (i) => GestureDetector(
+              onTap: () => onTap(i),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: FotoSpacing.sm, vertical: FotoSpacing.xs),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(_icons[i],
+                      color: active == i
+                          ? FotoColors.directions[i]
+                          : FotoColors.textSecondary,
+                      size: 20),
+                  const SizedBox(height: FotoSpacing.xs),
+                  Text(folderNames[i],
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: active == i
+                            ? FotoColors.directions[i]
+                            : FotoColors.textHint,
+                      ),
+                      overflow: TextOverflow.ellipsis, maxLines: 1),
+                ]),
+              ),
+            )),
           ),
         ),
       ),
@@ -623,14 +511,12 @@ class _BottomBar extends StatelessWidget {
             borderRadius: BorderRadius.vertical(
                 bottom: Radius.circular(FotoRadius.xl)),
           ),
-          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.undo_outlined, color: FotoColors.textSecondary, size: 16),
-            SizedBox(width: FotoSpacing.sm),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.undo_outlined,
+                color: FotoColors.textSecondary, size: 16),
+            const SizedBox(width: FotoSpacing.sm),
             Text('Return to original folder',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: FotoColors.textSecondary)),
+                style: FotoText.caption.copyWith(fontWeight: FontWeight.w500)),
           ]),
         ),
       ),
