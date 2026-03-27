@@ -43,8 +43,6 @@ class _UnsortScreenState extends State<UnsortScreen>
   late final AnimationController _snapCtrl;
   Offset _flyTarget = Offset.zero;
 
-  Size _screenSize = const Size(400, 800);
-
   final Map<int, Widget> _cache = {};
   static const _preload   = 4;
   static const _cacheMax  = 8;
@@ -268,7 +266,6 @@ class _UnsortScreenState extends State<UnsortScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Neutral info banner — consistent with setup_screen
             Container(
               padding: const EdgeInsets.all(FotoSpacing.md),
               decoration: BoxDecoration(
